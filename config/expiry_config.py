@@ -3,6 +3,7 @@ import datetime
 from dataclasses import dataclass
 from datetime import date
 from zoneinfo import ZoneInfo
+from typing import Optional
 from loguru import logger
 
 from config.settings import TradingConfig

@@ -86,6 +86,7 @@ class SignalEngine:
         self._candles_since_spike: int = 0
         self._last_suppression_candle: Optional[pd.Timestamp] = None
         self.needs_vp_refresh: bool = False
+        self._cooldowns: List[CooldownEntry] = []
 
     def _get_session_window(self, timestamp: pd.Timestamp) -> Optional[str]:
         """
@@ -207,30 +208,39 @@ class SignalEngine:
             return False, 0.0
         avg_range = sum(recent_candles_range[-10:]) / min(len(recent_candles_range), 10)
         return current_candle_range > (avg_range * self.spike_threshold_multiplier), avg_range
-def evaluate(
-    self,
-    current_price: float,
-    timestamp: pd.Timestamp,
-    current_high: float,
-    current_low: float,
-    recent_candle_ranges: list[float],
-    structure_state: StructureState,
-    session_profile: VolumeProfile,
-    prior_day_profile: VolumeProfile,
-    delta_builder: DeltaBuilder,
-    footprint_builder: FootprintBuilder,
-    big_trade_filter: BigTradeFilter,
-    discord_client=None,
-    supabase_client=None,
-) -> Tuple[Optional[Signal], List[GateResult]]:
-    """
-    Runs all 4 gates in sequence. Returns (Signal, gate_results).
-    """
-    if self.expiry_config and getattr(self.expiry_config, 'no_trading_today', False):
-        return None, []
 
-    self._purge_expired_cooldowns(timestamp)
-    results: List[GateResult] = []
+    def _purge_expired_cooldowns(self, timestamp: pd.Timestamp) -> None:
+        """Remove cooldowns that are older than 15 minutes."""
+        valid_cooldowns = []
+        for cd in self._cooldowns:
+            if (timestamp - cd.fired_at).total_seconds() / 60 < 15:
+                valid_cooldowns.append(cd)
+        self._cooldowns = valid_cooldowns
+
+    def evaluate(
+        self,
+        current_price: float,
+        timestamp: pd.Timestamp,
+        current_high: float,
+        current_low: float,
+        recent_candle_ranges: list[float],
+        structure_state: StructureState,
+        session_profile: VolumeProfile,
+        prior_day_profile: VolumeProfile,
+        delta_builder: DeltaBuilder,
+        footprint_builder: FootprintBuilder,
+        big_trade_filter: BigTradeFilter,
+        discord_client=None,
+        supabase_client=None,
+    ) -> Tuple[Optional[Signal], List[GateResult]]:
+        """
+        Runs all 4 gates in sequence. Returns (Signal, gate_results).
+        """
+        if self.expiry_config and getattr(self.expiry_config, 'no_trading_today', False):
+            return None, []
+
+        self._purge_expired_cooldowns(timestamp)
+        results: List[GateResult] = []
         
         session_window = self._get_session_window(timestamp)
         if session_window is None:
@@ -536,66 +546,6 @@ def evaluate(
                 zone_found = True
                 break
                 
-        if not zone_found:
-            return False, "Zone dissolved — setup invalidated"
-
-        return True, ""
-str]:
-        """
-        After a signal fires, call this on each subsequent evaluate() to
-        check if the setup is still intact.
-        
-        Invalidation conditions:
-        1. POC has migrated more than 30 points from signal time POC
-           → "POC migration: {old} → {new} — setup invalidated"
-        
-        2. Price has moved more than 20 points AWAY from the zone
-           in the WRONG direction (signal zone is no longer relevant)
-           → "Price departed zone — setup invalidated"
-        
-        3. Current profile no longer has a zone near the original signal zone
-           (zone dissolved into the profile)
-           → "Zone dissolved — setup invalidated"
-        
-        Returns (True, "") if still valid.
-        Returns (False, reason) if invalidated.
-        """
-        # We don't invalidate if price has reached T1
-        if signal.direction == "long" and current_price >= signal.t1_price:
-            return True, ""
-        elif signal.direction == "short" and current_price <= signal.t1_price:
-            return True, ""
-
-        if not current_profile:
-            return True, ""
-
-        # 1. POC Migration
-        poc_migration = abs(current_profile.poc - signal.vp_poc_at_signal)
-        if poc_migration > self.config.poc_migration_threshold_points:
-            return False, f"POC migration: {signal.vp_poc_at_signal:.2f} → {current_profile.poc:.2f} — setup invalidated"
-
-        # 2. Price moved > 20 points away in WRONG direction
-        if signal.direction == "long":
-            if current_price < (signal.zone_price - 20):
-                return False, "Price departed zone — setup invalidated"
-        else:
-            if current_price > (signal.zone_price + 20):
-                return False, "Price departed zone — setup invalidated"
-
-        # 3. Zone dissolved
-        # Check if the original zone price is near any current zone (POC, VAH, VAL)
-        tolerance = signal.zone_price * 0.002
-        zone_found = False
-        for current_zone_price in [current_profile.poc, current_profile.vah, current_profile.val]:
-            if abs(current_zone_price - signal.zone_price) <= tolerance:
-                zone_found = True
-                break
-                
-        if not zone_found:
-            return False, "Zone dissolved — setup invalidated"
-
-        return True, ""
-             
         if not zone_found:
             return False, "Zone dissolved — setup invalidated"
 
