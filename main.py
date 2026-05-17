@@ -112,19 +112,6 @@ class OrderFlowSystem:
         
         self._bg_tasks = []
 
-    async def _health_check_server(self) -> None:
-        """Simple health check server for Fly.io."""
-        async def handle(request):
-            return web.Response(text="OK")
-        
-        app = web.Application()
-        app.add_routes([web.get('/', handle)])
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', 8080)
-        await site.start()
-        logger.info("Health check server started on port 8080")
-
     async def _wait_for_api_slot(self) -> None:
         self._api_waiting_calls += 1
         if self._api_waiting_calls > 3:
@@ -623,7 +610,13 @@ class OrderFlowSystem:
         """
         logger.info("Starting OrderFlowSystem...")
         
+        # Start health check server immediately so Fly.io proxy is satisfied
+        self._bg_tasks.append(asyncio.create_task(self._health_check_server()))
+        
         if not self._check_trading_day():
+            logger.info("Holiday detected. Sleeping to keep container alive for health checks...")
+            while True:
+                await asyncio.sleep(3600)
             return
         
         # 10. Check market hours
@@ -652,7 +645,6 @@ class OrderFlowSystem:
         await self.discord.send_system_status("started", "OrderFlowSystem is now live.")
         
         # Background tasks
-        self._bg_tasks.append(asyncio.create_task(self._health_check_server()))
         self._bg_tasks.append(asyncio.create_task(self._heartbeat()))
         self._bg_tasks.append(asyncio.create_task(self._monitor_data_health()))
         self._bg_tasks.append(asyncio.create_task(self._schedule_vp_refresh()))
@@ -688,3 +680,43 @@ if __name__ == "__main__":
         logger.info("KeyboardInterrupt received.")
         asyncio.run(system.shutdown())
         sys.exit(0)
+wait self.dhan_ws.disconnect()
+        await self.discord.send_system_status("stopped", f"System stopped gracefully. Processed {self.tick_count} ticks.")
+        logger.info(f"Session summary: Processed {self.tick_count} total ticks.")
+
+async def start_health_check():
+    """Simple health check server for Fly.io."""
+    async def handle(request):
+        return web.Response(text="OK")
+    
+    app = web.Application()
+    app.add_routes([web.get('/', handle)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    logger.info("Health check server started on port 8080")
+
+if __name__ == "__main__":
+    async def main_entry():
+        # Start health check immediately
+        try:
+            await start_health_check()
+        except Exception as e:
+            print(f"Failed to start health check server: {e}")
+
+        try:
+            system = OrderFlowSystem()
+            await system.run()
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt received.")
+            if 'system' in locals():
+                await system.shutdown()
+            sys.exit(0)
+        except Exception as e:
+            logger.exception(f"System crashed: {e}")
+            # Keep alive so we can see logs and pass health checks
+            while True:
+                await asyncio.sleep(3600)
+
+    asyncio.run(main_entry())
