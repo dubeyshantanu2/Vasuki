@@ -1,4 +1,4 @@
-# fly.toml app configuration file generated for vasuki on 2026-05-17T19:26:55Z
+# fly.toml app configuration file generated for vasuki on 2026-05-17T19:49:07Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -6,14 +6,14 @@
 app = 'vasuki'
 primary_region = 'bom'
 
-[processes]
-  app = 'python main.py'
-
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
   PORT = '8080'
+
+[processes]
+  app = 'python main.py'
 
 [http_service]
   internal_port = 8080
