@@ -34,6 +34,13 @@ class ExpiryConfig:
     sl_buffer_points: int = 20          # wider SL
     t1_booking_pct: float = 0.60        # faster profit taking
     afternoon_block: bool = True        # hard block after valid_window_end
+    
+    # Gap specific
+    gap_detected: bool = False
+    gap_type: Optional[str] = None        # "gap_up" or "gap_down"
+    gap_adjusted_start: Optional[str] = None   # e.g. "10:15" or "10:30"
+    effective_window: Optional[str] = None     # human readable
+    no_trading_today: bool = False
 
 class ExpiryManager:
     def __init__(self, trading_config: TradingConfig):
@@ -111,3 +118,52 @@ class ExpiryManager:
             t1_booking_pct=expiry_config.t1_booking_pct,
             afternoon_block=expiry_config.afternoon_block
         )
+
+    def apply_gap_override(
+        self,
+        expiry_config: ExpiryConfig,
+        gap_info: Optional[dict],
+    ) -> ExpiryConfig:
+        """
+        If expiry day AND gap detected, adjust the effective trading window.
+        
+        gap_pct < 0.5%:  no adjustment (normal expiry rules)
+        gap_pct 0.5-1.0%: extend no-trade period to 10:15
+                           effective_window = "10:15 – 13:00"
+        gap_pct > 1.0%:  extend no-trade period to 10:30
+                           effective_window = "10:30 – 13:00"
+        gap_pct > 1.5%:  NO TRADING on this expiry day
+                           valid_window_end = gap_adjusted_start
+                           (window never opens)
+                           send Discord: "Expiry + large gap: no trading today"
+        
+        Returns updated copy of expiry_config.
+        Never mutates original.
+        """
+        if not gap_info or not expiry_config.is_expiry_day:
+            return dataclasses.replace(expiry_config)
+            
+        gap_pct = gap_info.get('gap_pct', 0.0)
+        gap_type = gap_info.get('type', 'gap_up')
+        
+        t1 = self._trading_config.gap_threshold_pct
+        t2 = getattr(self._trading_config, 'expiry_gap_tier2_pct', 0.010)
+        t3 = getattr(self._trading_config, 'expiry_gap_tier3_pct', 0.015)
+        
+        updated = dataclasses.replace(expiry_config, gap_detected=True, gap_type=gap_type)
+        
+        if gap_pct > t3:
+            updated.no_trading_today = True
+            updated.gap_adjusted_start = "13:00"
+            updated.valid_window_end = "13:00"
+            updated.effective_window = "No trading"
+        elif gap_pct > t2:
+            updated.gap_adjusted_start = "10:30"
+            updated.effective_window = "10:30 – 13:00"
+        elif gap_pct > t1:
+            updated.gap_adjusted_start = "10:15"
+            updated.effective_window = "10:15 – 13:00"
+        else:
+            updated.effective_window = f"{self._trading_config.no_trade_until} – 13:00"
+            
+        return updated

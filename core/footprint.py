@@ -47,10 +47,16 @@ class FootprintBuilder:
         self.current_candle: Optional[FootprintCandle] = None
         self.completed_candles: List[FootprintCandle] = []
 
+    def record_feed_gap(self, gap_start: pd.Timestamp, gap_end: pd.Timestamp) -> None:
+        """Mark current candle as having a feed gap."""
+        with self._lock:
+            if self.current_candle:
+                self.current_candle.has_feed_gap = True
+
     def _get_bucket(self, price: float) -> float:
         return round(price / self.bucket_size) * self.bucket_size
 
-    def process_tick(self, classified_tick: ClassifiedTick) -> Optional[FootprintCandle]:
+    def process_tick(self, classified_tick: Optional[ClassifiedTick]) -> Optional[FootprintCandle]:
         """
         Add classified tick to current building footprint candle.
         Bucket tick.ltp to nearest bucket_size.
@@ -58,8 +64,14 @@ class FootprintBuilder:
         Returns completed FootprintCandle when interval closes.
         Returns None if still building.
         """
+        if classified_tick is None:
+            return None
+            
         tick = classified_tick.tick
         
+        if tick.ltq == 0:
+            return None
+            
         with self._lock:
             # Match DeltaBuilder exactly
             interval_start = tick.timestamp.floor(f'{self.interval_minutes}min')

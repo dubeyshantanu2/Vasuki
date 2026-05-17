@@ -1,6 +1,10 @@
 import asyncio
 import sys
+import time
+from collections import deque
 from datetime import datetime, timedelta
+from typing import Optional
+import pandas as pd
 import pytz
 from loguru import logger
 
@@ -43,17 +47,28 @@ class OrderFlowSystem:
         self.supabase = SupabaseClient(CONFIG.supabase)
         self.discord = DiscordClient(CONFIG.discord)
         
-        self.market_structure = MarketStructureEngine(lookback=self.active_config.swing_lookback)
+        self.market_structure = MarketStructureEngine(
+            lookback=self.active_config.swing_lookback,
+            gap_threshold_pct=self.active_config.gap_threshold_pct,
+            atr_multiplier_medium=self.active_config.atr_multiplier_medium,
+            atr_multiplier_high=self.active_config.atr_multiplier_high,
+            atr_lookback_candles=self.active_config.atr_lookback_candles
+        )
         self.vp_engine = VolumeProfileEngine(
             bucket_size=self.active_config.bucket_size, 
-            value_area_pct=self.active_config.value_area_pct
+            value_area_pct=self.active_config.value_area_pct,
+            flat_profile_threshold_pct=self.active_config.flat_profile_threshold_pct
         )
-        self.delta_builder = DeltaBuilder(interval_minutes=int(self.active_config.ltf_interval))
+        self.delta_builder = DeltaBuilder(
+            interval_minutes=int(self.active_config.ltf_interval),
+            outlier_cap_multiplier=self.active_config.outlier_cap_multiplier
+        )
         self.footprint_builder = FootprintBuilder(
             bucket_size=self.active_config.bucket_size,
             interval_minutes=int(self.active_config.ltf_interval)
         )
         self.big_trade_filter = BigTradeFilter(threshold_lots=self.active_config.big_trade_threshold)
+        self.big_trade_filter.set_expiry_mode(self.expiry_manager.get_config().is_expiry_day)
         
         self.signal_engine = SignalEngine(
             trading_config=self.active_config, 
@@ -66,12 +81,142 @@ class OrderFlowSystem:
         self.structure_state = None
         self.session_profile = None
         self.prior_day_profile = None
+        self.last_gap_alert_date = None
         
         self.tick_count = 0
         self.last_signal_times = {} # zone_type -> timestamp
         self.signal_cooldown_mins = 15
+        self.active_signals = {}
+        self.current_price = 0.0
+        
+        # Variables for volatility spike detection
+        self.recent_candle_ranges: list[float] = []
+        self.current_high: float = 0.0
+        self.current_low: float = float('inf')
+        self.current_candle_start: Optional[pd.Timestamp] = None
+        
+        # Data Health Monitoring
+        self._last_tick_time: Optional[pd.Timestamp] = None
+        self._tick_count_window: int = 0
+        self._window_start: Optional[pd.Timestamp] = None
+        self._market_data_healthy: bool = True
+        self._signals_paused: bool = False
+        self._gap_paused: bool = False
+        
+        # REST API Rate Limiting
+        self.MAX_CALLS_PER_MINUTE: int = 10
+        self._api_call_times: deque = deque(maxlen=self.MAX_CALLS_PER_MINUTE)
+        self._api_rate_lock = asyncio.Lock()
+        self._api_waiting_calls: int = 0
         
         self._bg_tasks = []
+
+    async def _wait_for_api_slot(self) -> None:
+        self._api_waiting_calls += 1
+        if self._api_waiting_calls > 3:
+            logger.warning(f"REST call queue backed up: {self._api_waiting_calls} calls waiting")
+            
+        async with self._api_rate_lock:
+            now = time.monotonic()
+            if len(self._api_call_times) == self.MAX_CALLS_PER_MINUTE:
+                oldest = self._api_call_times[0]
+                wait = 60.0 - (now - oldest)
+                if wait > 0:
+                    logger.debug(f"Rate limiting REST calls: waiting {wait:.1f}s")
+                    await asyncio.sleep(wait)
+            self._api_call_times.append(time.monotonic())
+        self._api_waiting_calls -= 1
+
+    def _check_trading_day(self) -> bool:
+        """
+        Cross-reference today's date against ExpiryManager._is_exchange_holiday().
+        If today is a holiday:
+            Log: "Today is an NSE holiday — system will not start"
+            Send Discord: "📅 NSE Holiday — VASUKI not active today"
+            Return False
+        Return True
+        """
+        now = datetime.now(self.ist_tz)
+        if self.expiry_manager._is_exchange_holiday(now):
+            logger.info("Today is an NSE holiday — system will not start")
+            asyncio.create_task(self.discord.send_system_status("warning", "📅 NSE Holiday — VASUKI not active today"))
+            return False
+        return True
+
+    def _on_circuit_breaker(self) -> None:
+        """
+        Called when circuit breaker is suspected.
+        1. Pause signal evaluation (set self._signals_paused = True)
+        2. Do NOT reset DeltaBuilder, FootprintBuilder, or BigTradeFilter
+        3. Send Discord: "⏸ Circuit breaker suspected — trading paused"
+        4. Log current session state summary
+        """
+        self._signals_paused = True
+        msg = "⏸ Circuit breaker suspected — trading paused"
+        logger.warning(msg)
+        asyncio.create_task(self.discord.send_system_status("warning", msg))
+        if self.session_profile:
+            logger.info(f"Circuit Breaker paused at Session POC: {self.session_profile.poc}, Total Volume: {self.session_profile.total_volume}")
+
+    def _on_circuit_breaker_resume(self) -> None:
+        """
+        Called when ticks resume after circuit breaker.
+        1. Resume signal evaluation (self._signals_paused = False)
+        2. Trigger VP rebuild immediately
+        3. Send Discord: "▶ Trading resumed — VP refreshed"
+        """
+        self._signals_paused = False
+        asyncio.create_task(self._refresh_volume_profile())
+        msg = "▶ Trading resumed — VP refreshed"
+        logger.info(msg)
+        asyncio.create_task(self.discord.send_system_status("started", msg))
+
+    async def _monitor_data_health(self) -> None:
+        """
+        Background task. Runs every 60 seconds after 9:15 IST.
+        Checks for zero ticks and low tick rates.
+        """
+        while True:
+            await asyncio.sleep(60)
+            now = pd.Timestamp.now(tz="Asia/Kolkata")
+            
+            # Start monitoring after 09:25 IST
+            monitor_start = now.replace(hour=9, minute=25, second=0, microsecond=0)
+            if now < monitor_start:
+                continue
+                
+            # Market hours check (stop monitoring after 15:35)
+            monitor_end = now.replace(hour=15, minute=35, second=0, microsecond=0)
+            if now > monitor_end:
+                continue
+
+            no_data_limit = self.active_config.no_data_alert_minutes * 60
+            last_tick_secs = (now - self._last_tick_time).total_seconds() if self._last_tick_time else float('inf')
+            
+            # Check 1 - Zero tick detection
+            if self._last_tick_time is None or last_tick_secs > no_data_limit:
+                if self._market_data_healthy:
+                    msg = "🔴 No market data received. Possible holiday or NSE outage."
+                    logger.error(msg)
+                    asyncio.create_task(self.discord.send_system_status("error", msg))
+                    self._market_data_healthy = False
+            
+            # Check 3 - Recovery
+            elif not self._market_data_healthy:
+                msg = "🟢 Market data restored"
+                logger.info(msg)
+                asyncio.create_task(self.discord.send_system_status("started", msg))
+                self._market_data_healthy = True
+            
+            # Check 2 - Low tick rate
+            if self._window_start is None:
+                self._window_start = now
+                self._tick_count_window = 0
+            elif (now - self._window_start).total_seconds() >= 300: # 5 minutes
+                if self._tick_count_window < self.active_config.heartbeat_tick_minimum:
+                    logger.warning(f"Low tick rate: {self._tick_count_window} ticks in last 5 min")
+                self._window_start = now
+                self._tick_count_window = 0
 
     async def initialize(self) -> None:
         """
@@ -83,11 +228,42 @@ class OrderFlowSystem:
         """
         logger.info("Initializing OrderFlowSystem...")
         try:
+            await self.supabase.sync_fallback_records(discord_client=self.discord)
             now = datetime.now(self.ist_tz)
             today_str = now.strftime("%Y-%m-%d")
             
+            # 0. Compute 60-day Baseline ATR for adaptive lookback
+            start_date_90d = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+            try:
+                await self._wait_for_api_slot()
+                daily_df = self.dhan_rest.get_candles(
+                    security_id=self.active_config.security_id,
+                    exchange_segment=self.active_config.exchange_segment,
+                    instrument_type="INDEX",
+                    interval="D",
+                    from_date=start_date_90d,
+                    to_date=today_str
+                )
+                if not daily_df.empty and len(daily_df) > 10:
+                    self.market_structure._baseline_atr = float((daily_df['high'] - daily_df['low']).mean())
+                    logger.info(f"Baseline ATR computed: {self.market_structure._baseline_atr:.2f}")
+                else:
+                    logger.warning("Insufficient daily data for ATR calculation.")
+                    
+                # 0.1 Compute 20-day Average Daily Volume for Low Conviction Profile
+                if not daily_df.empty and len(daily_df) > 0:
+                    recent_daily = daily_df.iloc[-20:]
+                    if len(recent_daily) < 10:
+                        logger.warning(f"Only {len(recent_daily)} days available for volume baseline.")
+                    avg_daily_vol = float(recent_daily['volume'].mean())
+                    self.vp_engine.set_baseline_volume(avg_daily_vol)
+                    logger.info(f"Baseline Average Daily Volume computed: {avg_daily_vol:.2f}")
+            except Exception as e:
+                logger.error(f"Failed to fetch daily data for ATR and Volume: {e}")
+            
             # 1. Fetch 1H OHLCV for last 5 days -> run MarketStructureEngine
             start_date_5d = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+            await self._wait_for_api_slot()
             htf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
@@ -98,8 +274,21 @@ class OrderFlowSystem:
             )
             self.structure_state = self.market_structure.analyze(htf_df)
             
+            gap_info = self.market_structure.detect_gap_open(htf_df)
+            expiry_config = self.expiry_manager.get_config()
+            
+            if expiry_config.is_expiry_day and gap_info:
+                expiry_config = self.expiry_manager.apply_gap_override(expiry_config, gap_info)
+                if expiry_config.gap_detected:
+                    logger.warning(f"Expiry + gap open: effective window = {expiry_config.effective_window}")
+                    asyncio.create_task(self.discord.send_system_status("warning",
+                        f"Expiry day + {gap_info['type']}: window adjusted to {expiry_config.effective_window}"
+                    ))
+                self.signal_engine.expiry_config = expiry_config
+            
             # 2. Fetch 15m OHLCV for today + yesterday -> build session VP + prior day VP
             start_date_2d = (now - timedelta(days=3)).strftime("%Y-%m-%d")
+            await self._wait_for_api_slot()
             mtf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
@@ -139,15 +328,25 @@ class OrderFlowSystem:
             
             # 4. Save snapshots to Supabase
             if self.structure_state:
-                self.supabase.save_market_structure(self.active_config.symbol, self.structure_state)
+                asyncio.create_task(self.supabase.save_market_structure(self.active_config.symbol, self.structure_state))
+                self._check_gap_alert()
             if self.prior_day_profile:
-                self.supabase.save_volume_profile(self.active_config.symbol, self.prior_day_profile, "prior_day")
+                asyncio.create_task(self.supabase.save_volume_profile(self.active_config.symbol, self.prior_day_profile, "prior_day"))
             if self.session_profile:
-                self.supabase.save_volume_profile(self.active_config.symbol, self.session_profile, "session")
+                asyncio.create_task(self.supabase.save_volume_profile(self.active_config.symbol, self.session_profile, "session"))
                 
         except Exception as e:
             logger.error(f"Initialization failed: {e}")
             raise
+
+    def on_feed_gap(self, start: pd.Timestamp, end: pd.Timestamp) -> None:
+        """
+        Called by WebSocket client when a gap of >5s is detected upon reconnection.
+        Marks the current DeltaCandle as incomplete (has_feed_gap).
+        """
+        if self.delta_builder and self.delta_builder.current_candle:
+            self.delta_builder.current_candle.has_feed_gap = True
+            logger.warning(f"Feed gap detected from {start} to {end} — marking candle incomplete")
 
     def on_tick(self, tick: Tick) -> None:
         """
@@ -169,6 +368,25 @@ class OrderFlowSystem:
           9. Save delta_candle to Supabase
         """
         self.tick_count += 1
+        self.current_price = tick.ltp
+        
+        # Data Health Monitoring
+        self._last_tick_time = tick.timestamp
+        self._tick_count_window += 1
+        
+        # Track 5m candle range for spike detection
+        candle_start = tick.timestamp.floor('5min')
+        if self.current_candle_start is None:
+            self.current_candle_start = candle_start
+        elif candle_start != self.current_candle_start:
+            if self.current_high > 0 and self.current_low != float('inf'):
+                self.recent_candle_ranges.append(self.current_high - self.current_low)
+            self.current_high = 0.0
+            self.current_low = float('inf')
+            self.current_candle_start = candle_start
+            
+        self.current_high = max(self.current_high, tick.ltp)
+        self.current_low = min(self.current_low, tick.ltp)
         
         # 1. Delta
         completed_delta = self.delta_builder.process_tick(tick)
@@ -176,28 +394,46 @@ class OrderFlowSystem:
         # 2. Classify
         classified = self.delta_builder.classify_tick(tick)
         
-        # 3. Footprint
-        self.footprint_builder.process_tick(classified)
-        
-        # 4. Big Trade
-        big_trade = self.big_trade_filter.process_tick(classified)
-        if big_trade and big_trade.significance == "block":
-            asyncio.create_task(self.discord.send_big_trade_alert(big_trade, self.active_config.symbol))
-            # SupabaseClient fire_and_forget handles the executor logic natively
-            self.supabase.save_big_trade(self.active_config.symbol, big_trade)
+        if classified is not None:
+            # 3. Footprint
+            self.footprint_builder.process_tick(classified)
             
+            # 4. Big Trade
+            big_trade = self.big_trade_filter.process_tick(classified)
+            if big_trade:
+                if big_trade.is_outlier:
+                    asyncio.create_task(self.discord.send_system_status("warning", f"🚨 Outlier trade: {big_trade.quantity} lots — suspected rollover, excluded from signal"))
+                elif big_trade.significance == "block":
+                    asyncio.create_task(self.discord.send_big_trade_alert(big_trade, self.active_config.symbol))
+                
+                # SupabaseClient fire_and_forget handles the executor logic natively
+                asyncio.create_task(self.supabase.save_big_trade(self.active_config.symbol, big_trade))
+            
+        if self._signals_paused or self._gap_paused:
+            # Still process ticks (build delta/footprint) but don't evaluate signals
+            # This preserves state while the market is restabilizing
+            pass
         # 5. Evaluate Signal Every 10 Ticks
-        if self.tick_count % 10 == 0:
+        elif self.tick_count % 10 == 0:
             signal_result = self.signal_engine.evaluate(
                 current_price=tick.ltp,
                 timestamp=tick.timestamp,
+                current_high=self.current_high,
+                current_low=self.current_low,
+                recent_candle_ranges=self.recent_candle_ranges,
                 structure_state=self.structure_state,
                 session_profile=self.session_profile,
                 prior_day_profile=self.prior_day_profile,
                 delta_builder=self.delta_builder,
                 footprint_builder=self.footprint_builder,
-                big_trade_filter=self.big_trade_filter
+                big_trade_filter=self.big_trade_filter,
+                discord_client=self.discord,
+                supabase_client=self.supabase
             )
+            
+            if self.signal_engine.needs_vp_refresh:
+                asyncio.create_task(self._refresh_volume_profile())
+                self.signal_engine.needs_vp_refresh = False
             
             if signal_result:
                 signal, results = signal_result
@@ -209,7 +445,7 @@ class OrderFlowSystem:
                         
                         # 6. Send/Save Signal
                         asyncio.create_task(self.discord.send_signal(signal))
-                        self.supabase.save_signal(signal)
+                        asyncio.create_task(self.supabase.save_signal(signal))
                         
                         # 7. Log Gate Results (already logged in engine, but can send failure logs etc if needed)
                 else:
@@ -219,15 +455,7 @@ class OrderFlowSystem:
         # 8-9. Every completed DeltaCandle
         if completed_delta:
             # 9. Save delta_candle
-            self.supabase.save_delta_candle(self.active_config.symbol, completed_delta)
-            
-            # 8. Re-run market structure (on 1H candle completion only)
-            if completed_delta.interval_end.minute == 0:
-                asyncio.create_task(self._refresh_htf_structure())
-                
-            # Trigger VP refresh every 15 mins (aligned with candle closes)
-            if completed_delta.interval_end.minute % 15 == 0:
-                asyncio.create_task(self._refresh_volume_profile())
+            asyncio.create_task(self.supabase.save_delta_candle(self.active_config.symbol, completed_delta))
 
     async def _refresh_htf_structure(self) -> None:
         """
@@ -240,6 +468,7 @@ class OrderFlowSystem:
             start_date_5d = (now - timedelta(days=7)).strftime("%Y-%m-%d")
             today_str = now.strftime("%Y-%m-%d")
             
+            await self._wait_for_api_slot()
             htf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
@@ -249,10 +478,33 @@ class OrderFlowSystem:
                 to_date=today_str
             )
             self.structure_state = self.market_structure.analyze(htf_df)
-            self.supabase.save_market_structure(self.active_config.symbol, self.structure_state)
+            asyncio.create_task(self.supabase.save_market_structure(self.active_config.symbol, self.structure_state))
             logger.info(f"HTF Structure updated: {self.structure_state.bias.name}")
+            self._check_gap_alert()
         except Exception as e:
             logger.error(f"Failed to refresh HTF structure: {e}")
+
+    def _check_gap_alert(self):
+        """Check if we need to send a gap alert"""
+        if not self.structure_state or not getattr(self.structure_state, 'gap_info', None):
+            if self._gap_paused:
+                self._gap_paused = False
+                logger.info("Gap settled — resuming signals")
+                asyncio.create_task(self.discord.send_system_status("started", "▶ Gap settled — signals resumed"))
+            return
+            
+        if self.structure_state.last_event.value == "gap_open":
+            self._gap_paused = True
+            now = datetime.now(self.ist_tz).date()
+            if self.last_gap_alert_date != now:
+                gap_info = self.structure_state.gap_info
+                msg = f"⚠ Gap open {gap_info['type']}: {gap_info['gap_points']:.0f} pts — signals paused"
+                asyncio.create_task(self.discord.send_system_status("error", msg))
+                self.last_gap_alert_date = now
+        elif self._gap_paused:
+            self._gap_paused = False
+            logger.info("Gap settled — resuming signals")
+            asyncio.create_task(self.discord.send_system_status("started", "▶ Gap settled — signals resumed"))
 
     async def _refresh_volume_profile(self) -> None:
         """
@@ -264,6 +516,7 @@ class OrderFlowSystem:
             now = datetime.now(self.ist_tz)
             today_str = now.strftime("%Y-%m-%d")
             
+            await self._wait_for_api_slot()
             mtf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
@@ -273,9 +526,24 @@ class OrderFlowSystem:
                 to_date=today_str
             )
             if not mtf_df.empty:
-                self.session_profile = self.vp_engine.build_from_ohlcv(mtf_df)
-                self.supabase.save_volume_profile(self.active_config.symbol, self.session_profile, "session")
+                self.session_profile = self.vp_engine.build(mtf_df)
+                asyncio.create_task(self.supabase.save_volume_profile(self.active_config.symbol, self.session_profile, "session"))
                 logger.info(f"Session VP updated: POC={self.session_profile.poc}")
+                
+                # Check active signals for invalidation
+                if self.current_price > 0:
+                    invalidated_ids = []
+                    for sig_id, signal in self.active_signals.items():
+                        valid, reason = self.signal_engine.is_signal_still_valid(
+                            signal, self.session_profile, self.current_price
+                        )
+                        if not valid:
+                            asyncio.create_task(self.discord.send_signal_invalidation(signal, reason))
+                            asyncio.create_task(self.supabase.mark_signal_invalidated(signal.id, reason))
+                            invalidated_ids.append(sig_id)
+                            
+                    for sig_id in invalidated_ids:
+                        del self.active_signals[sig_id]
         except Exception as e:
             logger.error(f"Failed to refresh Volume Profile: {e}")
 
@@ -283,19 +551,49 @@ class OrderFlowSystem:
         """Log a heartbeat every 5 minutes."""
         while True:
             await asyncio.sleep(5 * 60)
-            logger.info("System alive — processing ticks")
+            cooldown_state = [(c.zone_type, c.direction, c.t1_reached) for c in self.signal_engine._cooldowns]
+            logger.info(f"System alive — processing ticks. Cooldowns: {cooldown_state}")
 
-    async def _vp_refresh_loop(self) -> None:
-        """Background task for VP refresh, just in case candle ticks stall."""
+    async def _schedule_vp_refresh(self) -> None:
+        """
+        Calculate next offset from now.
+        Sleep until then. Call _refresh_volume_profile().
+        Repeat indefinitely.
+        """
+        offset_mins = self.active_config.vp_refresh_offset_mins
         while True:
-            await asyncio.sleep(15 * 60)
-            await self._refresh_volume_profile()
+            try:
+                now = datetime.now(self.ist_tz)
+                current_interval = (now.minute // 15) * 15
+                candidate_fire = now.replace(minute=current_interval, second=0, microsecond=0) + timedelta(minutes=offset_mins)
+                
+                if candidate_fire <= now:
+                    candidate_fire += timedelta(minutes=15)
+                
+                sleep_seconds = (candidate_fire - now).total_seconds()
+                await asyncio.sleep(sleep_seconds)
+                await self._refresh_volume_profile()
+            except Exception as e:
+                logger.error(f"VP refresh task crashed: {e}. Restarting in 5s.")
+                await asyncio.sleep(5)
 
-    async def _htf_refresh_loop(self) -> None:
-        """Background task for HTF refresh, just in case candle ticks stall."""
+    async def _schedule_structure_refresh(self) -> None:
+        """Same pattern but for 60-minute boundary."""
+        offset_mins = self.active_config.structure_refresh_offset_mins
         while True:
-            await asyncio.sleep(60 * 60)
-            await self._refresh_htf_structure()
+            try:
+                now = datetime.now(self.ist_tz)
+                candidate_fire = now.replace(minute=offset_mins, second=0, microsecond=0)
+                
+                if candidate_fire <= now:
+                    candidate_fire += timedelta(hours=1)
+                
+                sleep_seconds = (candidate_fire - now).total_seconds()
+                await asyncio.sleep(sleep_seconds)
+                await self._refresh_htf_structure()
+            except Exception as e:
+                logger.error(f"Structure refresh task crashed: {e}. Restarting in 5s.")
+                await asyncio.sleep(5)
 
     async def run(self) -> None:
         """
@@ -310,6 +608,9 @@ class OrderFlowSystem:
         15. On KeyboardInterrupt: graceful shutdown
         """
         logger.info("Starting OrderFlowSystem...")
+        
+        if not self._check_trading_day():
+            return
         
         # 10. Check market hours
         while True:
@@ -326,17 +627,21 @@ class OrderFlowSystem:
 
         # 11. Initialize
         await self.initialize()
-        
+
         # 12. Register tick handler
         self.dhan_ws.register_tick_handler(self.on_tick)
-        
+        self.dhan_ws.register_gap_handler(self.on_feed_gap)
+        self.dhan_ws.register_circuit_breaker_handler(self._on_circuit_breaker)
+        self.dhan_ws.register_circuit_breaker_resume_handler(self._on_circuit_breaker_resume)
+
         # 13. System status
         await self.discord.send_system_status("started", "OrderFlowSystem is now live.")
         
         # Background tasks
         self._bg_tasks.append(asyncio.create_task(self._heartbeat()))
-        self._bg_tasks.append(asyncio.create_task(self._vp_refresh_loop()))
-        self._bg_tasks.append(asyncio.create_task(self._htf_refresh_loop()))
+        self._bg_tasks.append(asyncio.create_task(self._monitor_data_health()))
+        self._bg_tasks.append(asyncio.create_task(self._schedule_vp_refresh()))
+        self._bg_tasks.append(asyncio.create_task(self._schedule_structure_refresh()))
         
         # 14. Connect (blocks)
         instruments = [{

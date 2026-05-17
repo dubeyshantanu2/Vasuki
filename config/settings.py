@@ -16,6 +16,7 @@ class DhanConfig:
 class SupabaseConfig:
     url: str = os.getenv("SUPABASE_URL", "")
     key: str = os.getenv("SUPABASE_KEY", "")
+    fallback_dir: str = os.getenv("SUPABASE_FALLBACK_DIR", "/var/log/order-flow-nifty/fallback/")
 
 @dataclass
 class DiscordConfig:
@@ -37,14 +38,33 @@ class TradingConfig:
     # Volume Profile
     bucket_size: float = 0.5          # NIFTY points per bucket
     value_area_pct: float = 0.70      # 70% value area
+    flat_profile_threshold_pct: float = 0.15 # top 3 buckets < 15% = flat
+    poc_migration_threshold_points: int = 30 # points before POC migration invalidates signal
+    confluence_threshold_pts: float = 10.0 # NIFTY points
 
     # Market Structure
     swing_lookback: int = 3           # candles each side for swing detection
+    gap_threshold_pct: float = 0.005  # 0.5% threshold for gap detection
+    expiry_gap_tier2_pct: float = 0.010 # 1.0%
+    expiry_gap_tier3_pct: float = 0.015 # 1.5%
+    atr_multiplier_medium: float = 1.5   # lookback → 5
+    atr_multiplier_high: float = 2.0     # lookback → 7
+    atr_lookback_candles: int = 20
 
     # Order Flow
     big_trade_threshold: int = 500    # lots — big trade filter
+    outlier_cap_multiplier: float = 3.0 # multiplier for delta tick capping
+
+    # System Scheduling
+    vp_refresh_offset_mins: int = 2
+    structure_refresh_offset_mins: int = 5
+    no_data_alert_minutes: int = 10
+    heartbeat_tick_minimum: int = 50
+    circuit_breaker_silence_threshold_seconds: int = 120
 
     # Execution
+    spike_threshold_multiplier: float = 3.0
+    spike_suppression_candles: int = 3
     sl_buffer_points: int = 15        # NIFTY points beyond structural level
     t1_booking_pct: float = 0.50
     t2_booking_pct: float = 0.30

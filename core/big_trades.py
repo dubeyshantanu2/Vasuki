@@ -15,8 +15,14 @@ class BigTrade:
     quantity: int           # in lots
     direction: str          # "buy" or "sell"
     significance: str       # "large" (500-999) or "block" (1000+)
+    is_suspected_rollover: bool = False
+    is_outlier: bool = False        # single tick far above session average
+    outlier_ratio: float = 1.0      # trade_size / session_avg_big_trade_size
 
 class BigTradeFilter:
+    ROLLOVER_SIZE_MULTIPLIER: float = 5.0    # 5x avg big trade = suspect rollover
+    OUTLIER_SIZE_MULTIPLIER: float = 10.0   # 10x avg = definite outlier
+
     def __init__(
         self,
         threshold_lots: int = 500,          # minimum to flag as big trade
@@ -27,8 +33,41 @@ class BigTradeFilter:
         self.block_threshold_lots = block_threshold_lots
         self.on_big_trade = on_big_trade
         
+        self._rollover_multiplier = self.ROLLOVER_SIZE_MULTIPLIER
+        self._session_big_trade_sizes: List[int] = []
+        
         self._lock = Lock()
         self.big_trades: List[BigTrade] = []
+
+    def set_expiry_mode(self, is_expiry: bool) -> None:
+        self._rollover_multiplier = 3.0 if is_expiry else self.ROLLOVER_SIZE_MULTIPLIER
+
+    def _classify_trade(self, trade: BigTrade) -> BigTrade:
+        """
+        After creating the BigTrade, classify it further.
+        
+        Compute rolling average of big trade sizes this session.
+        """
+        with self._lock:
+            self._session_big_trade_sizes.append(trade.quantity)
+            if len(self._session_big_trade_sizes) > 20:
+                self._session_big_trade_sizes.pop(0)
+            
+            # If fewer than 5 big trades seen: no rollover classification (not enough baseline)
+            if len(self._session_big_trade_sizes) < 5:
+                return trade
+                
+            avg = sum(self._session_big_trade_sizes) / len(self._session_big_trade_sizes)
+
+        if trade.quantity > avg * self.OUTLIER_SIZE_MULTIPLIER:
+            trade.is_outlier = True
+            trade.is_suspected_rollover = True   # assume rollover for safety
+        elif trade.quantity > avg * self._rollover_multiplier:
+            trade.is_suspected_rollover = True
+            # Could be real — flag but don't exclude unless we treat all suspected rollovers carefully
+        
+        trade.outlier_ratio = trade.quantity / avg if avg > 0 else 1.0
+        return trade
 
     def process_tick(self, classified_tick: ClassifiedTick) -> Optional[BigTrade]:
         """
@@ -52,13 +91,18 @@ class BigTradeFilter:
                 significance=significance
             )
             
+            big_trade = self._classify_trade(big_trade)
+            
             with self._lock:
                 self.big_trades.append(big_trade)
                 
-            logger.info(
-                f"BigTrade: time={big_trade.timestamp}, price={big_trade.price}, "
-                f"qty={big_trade.quantity}, dir={big_trade.direction}, sig={big_trade.significance}"
-            )
+            if big_trade.is_outlier:
+                logger.warning(f"Outlier trade detected: {big_trade.quantity} lots at {big_trade.price} ({big_trade.outlier_ratio:.1f}x avg) — flagged as rollover")
+            else:
+                logger.info(
+                    f"BigTrade: time={big_trade.timestamp}, price={big_trade.price}, "
+                    f"qty={big_trade.quantity}, dir={big_trade.direction}, sig={big_trade.significance}"
+                )
             
             if self.on_big_trade:
                 try:
@@ -112,11 +156,14 @@ class BigTradeFilter:
         """
         recent_trades = self.get_recent_big_trades(within_seconds, price_range)
         
-        if not recent_trades:
+        # Exclude suspected rollover trades from dominant side calculation
+        clean_trades = [t for t in recent_trades if not t.is_suspected_rollover]
+        
+        if not clean_trades:
             return None
             
-        buy_lots = sum(t.quantity for t in recent_trades if t.direction == "buy")
-        sell_lots = sum(t.quantity for t in recent_trades if t.direction == "sell")
+        buy_lots = sum(t.quantity for t in clean_trades if t.direction == "buy")
+        sell_lots = sum(t.quantity for t in clean_trades if t.direction == "sell")
         
         # Checking if one side is 20%+ larger than the other
         if buy_lots >= sell_lots * 1.20 and buy_lots > 0:
@@ -130,3 +177,4 @@ class BigTradeFilter:
         """Clear all stored big trades for new session."""
         with self._lock:
             self.big_trades.clear()
+            self._session_big_trade_sizes.clear()

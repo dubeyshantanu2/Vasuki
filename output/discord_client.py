@@ -134,14 +134,27 @@ class DiscordClient:
         title = f"{'🔼 LONG' if is_long else '🔽 SHORT'} SIGNAL — {signal.symbol}"
         color = 0x00C853 if is_long else 0xD50000
 
+        if signal.confluence and signal.confluence.get("strength") != "single":
+            color = 0x00FF00 if is_long else 0xFF0000  # Brighter shade for confluence
+
         embed = {
             "title": title,
             "color": color,
             "description": self._build_signal_box(signal),
+            "fields": [],
             "footer": {
                 "text": signal.triggered_at.strftime("%H:%M:%S IST")
             }
         }
+        
+        if signal.confluence and signal.confluence.get("strength") != "single":
+            strength = signal.confluence.get("strength").title()
+            sources = ", ".join(signal.confluence.get("sources", []))
+            embed["fields"].append({
+                "name": f"Confluence: {strength} zone",
+                "value": f"({sources})",
+                "inline": False
+            })
 
         await self._post(self.config.webhook_url, {"embeds": [embed]})
 
@@ -192,6 +205,20 @@ class DiscordClient:
             "content": f"{icon} **System {status.capitalize()}**: {message}"
         }
         await self._post(self.config.alert_webhook_url, payload)
+
+    async def send_signal_invalidation(self, signal: Signal, reason: str) -> None:
+        """
+        Send a compact invalidation notice to the signal channel.
+        Format: "⚠ Signal invalidated: {direction} @ {zone} — {reason}"
+        """
+        if not self.config.webhook_url:
+            return
+
+        direction_icon = "🔼" if signal.direction.lower() == "long" else "🔽"
+        msg = f"⚠ Signal invalidated: {direction_icon} {signal.direction.upper()} @ {signal.zone_type} — {reason}"
+        
+        payload = {"content": msg}
+        await self._post(self.config.webhook_url, payload)
 
     async def send_big_trade_alert(self, trade: BigTrade, symbol: str) -> None:
         """

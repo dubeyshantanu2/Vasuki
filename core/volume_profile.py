@@ -19,6 +19,7 @@ class VolumeProfileNode:
 
 @dataclass
 class VolumeProfile:
+    id: str                           # UUID of the profile snapshot
     nodes: List[VolumeProfileNode]   # sorted by price ascending
     poc: float                        # price of POC bucket
     vah: float                        # upper edge of value area
@@ -27,11 +28,48 @@ class VolumeProfile:
     value_area_pct: float             # typically 0.70
     session_start: pd.Timestamp
     session_end: pd.Timestamp
+    is_low_conviction: bool = False
+    volume_ratio: float = 1.0
+    is_flat_profile: bool = False
+    poc_concentration_pct: float = 0.0
 
 class VolumeProfileEngine:
-    def __init__(self, bucket_size: float = 0.5, value_area_pct: float = 0.70):
+    THIN_VOLUME_THRESHOLD: float = 0.40  # below 40% of average = thin
+
+    def __init__(self, bucket_size: float = 0.5, value_area_pct: float = 0.70, flat_profile_threshold_pct: float = 0.15):
         self.bucket_size = bucket_size
         self.value_area_pct = value_area_pct
+        self.flat_profile_threshold_pct = flat_profile_threshold_pct
+        self._avg_daily_volume: float = 0.0   # set by orchestrator at startup
+
+    def set_baseline_volume(self, avg_daily_volume: float) -> None:
+        self._avg_daily_volume = avg_daily_volume
+
+    def _compute_volume_ratio(
+        self,
+        session_volume: float,
+        avg_daily_volume: float,
+    ) -> float:
+        """Returns session_volume / avg_daily_volume. Capped at 2.0."""
+        if avg_daily_volume == 0:
+            return 1.0
+        return min(session_volume / avg_daily_volume, 2.0)
+        
+    def _compute_poc_concentration(self, nodes: list[VolumeProfileNode]) -> float:
+        """
+        Returns the combined volume % of the top 3 buckets.
+        
+        top_3_volume = sum of highest 3 node volumes
+        total_volume = sum of all node volumes
+        concentration = top_3_volume / total_volume
+        """
+        if not nodes:
+            return 0.0
+        sorted_nodes = sorted(nodes, key=lambda n: n.volume, reverse=True)
+        top_3 = sorted_nodes[:3]
+        top_3_vol = sum(n.volume for n in top_3)
+        total_vol = sum(n.volume for n in nodes)
+        return top_3_vol / total_vol if total_vol > 0 else 0.0
 
     def _get_bucket(self, price: float) -> float:
         return round(price / self.bucket_size) * self.bucket_size
@@ -127,7 +165,9 @@ class VolumeProfileEngine:
 
         logger.info(f"Built Volume Profile: POC={poc:.2f}, VAH={vah:.2f}, VAL={val:.2f}, TotalVol={total_volume:.2f}")
 
-        return VolumeProfile(
+        import uuid
+        profile = VolumeProfile(
+            id=str(uuid.uuid4()),
             nodes=nodes,
             poc=poc,
             vah=vah,
@@ -137,6 +177,23 @@ class VolumeProfileEngine:
             session_start=session_start,
             session_end=session_end
         )
+        
+        profile.volume_ratio = self._compute_volume_ratio(
+            session_volume=profile.total_volume,
+            avg_daily_volume=self._avg_daily_volume
+        )
+        profile.is_low_conviction = profile.volume_ratio < self.THIN_VOLUME_THRESHOLD
+        
+        if profile.is_low_conviction:
+            logger.warning(f"Low conviction session: volume {profile.volume_ratio:.0%} of average")
+
+        profile.poc_concentration_pct = self._compute_poc_concentration(nodes)
+        profile.is_flat_profile = profile.poc_concentration_pct < self.flat_profile_threshold_pct
+        
+        if profile.is_flat_profile:
+            logger.warning(f"Flat profile detected: top 3 buckets = {profile.poc_concentration_pct:.1%} of volume — skipping")
+
+        return profile
 
     def _get_datetime_series(self, df: pd.DataFrame) -> pd.Series:
         if 'timestamp' in df.columns:

@@ -74,7 +74,20 @@ CREATE TABLE signals (
     t2_price float8,
     t3_price float8,
     confirmations jsonb,          -- {"delta": true, "footprint": true, "big_trade": false}
+    confluence jsonb,             -- {"strength": "single", "all_zones": [], "sources": []}
     is_expiry_day boolean DEFAULT false,
     created_at timestamptz DEFAULT now()
 );
 CREATE INDEX idx_signals_symbol_time ON signals (symbol, triggered_at);
+
+-- 6. spike_events
+CREATE TABLE spike_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol text NOT NULL,
+    detected_at timestamptz NOT NULL,
+    candle_range float8 NOT NULL,
+    avg_range float8 NOT NULL,
+    suppression_end timestamptz,
+    created_at timestamptz DEFAULT now()
+);
+CREATE INDEX idx_spike_events_symbol_time ON spike_events (symbol, detected_at);

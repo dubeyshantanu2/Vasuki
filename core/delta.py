@@ -16,6 +16,13 @@ class ClassifiedTick:
     sell_volume: int
 
 @dataclass
+class FeedGap:
+    started_at: pd.Timestamp
+    ended_at: pd.Timestamp
+    duration_seconds: float
+    affected_candle_start: pd.Timestamp
+
+@dataclass
 class DeltaCandle:
     interval_start: pd.Timestamp  # candle open time (IST)
     interval_end: pd.Timestamp    # candle close time (IST)
@@ -26,9 +33,11 @@ class DeltaCandle:
     high_delta: float             # max delta reached within candle
     low_delta: float              # min delta reached within candle
     is_complete: bool             # True when candle interval has closed
+    has_feed_gap: bool = False    # True if feed disconnected during this candle
+    outlier_ticks_count: int = 0  # number of capped ticks in this candle
 
 class DeltaBuilder:
-    def __init__(self, interval_minutes: int = 5):
+    def __init__(self, interval_minutes: int = 5, outlier_cap_multiplier: float = 3.0):
         self.interval_minutes = interval_minutes
         self._lock = Lock()
         
@@ -36,26 +45,55 @@ class DeltaBuilder:
         self.completed_candles: List[DeltaCandle] = []
         self.cumulative_delta: float = 0.0
 
+        self._session_tick_volumes: list[int] = []
+        self._outlier_cap_multiplier: float = outlier_cap_multiplier
+        self._outlier_ticks: list[ClassifiedTick] = []
+
+    def _get_volume_cap(self) -> Optional[int]:
+        """
+        Returns the cap for a single tick's contribution to delta.
+        Cap = outlier_cap_multiplier * rolling average LTQ (last 50 ticks).
+        Returns None if fewer than 20 ticks seen (no cap yet — too early).
+        """
+        if len(self._session_tick_volumes) < 20:
+            return None
+        recent = self._session_tick_volumes[-50:]
+        avg_ltq = sum(recent) / len(recent)
+        return max(100, int(avg_ltq * self._outlier_cap_multiplier))
+
     def classify_tick(self, tick: Tick) -> ClassifiedTick:
         """
         Uptick Rule:
           if tick.ltp >= tick.prev_ltp -> BUY  (aggressive buyer)
           if tick.ltp <  tick.prev_ltp -> SELL (aggressive seller)
         """
-        if tick.ltp >= tick.prev_ltp:
-            return ClassifiedTick(
-                tick=tick,
-                direction="buy",
-                buy_volume=tick.ltq,
-                sell_volume=0
+        direction = "buy" if tick.ltp >= tick.prev_ltp else "sell"
+        self._session_tick_volumes.append(tick.ltq)
+
+        volume_cap = self._get_volume_cap()
+        effective_ltq = tick.ltq
+
+        classified_tick = ClassifiedTick(
+            tick=tick,
+            direction=direction,
+            buy_volume=0,
+            sell_volume=0
+        )
+
+        if volume_cap and tick.ltq > volume_cap:
+            effective_ltq = volume_cap
+            logger.info(
+                f"Outlier tick capped: {tick.ltq} lots → {volume_cap} lots "
+                f"at {tick.ltp} ({tick.timestamp})"
             )
-        else:
-            return ClassifiedTick(
-                tick=tick,
-                direction="sell",
-                buy_volume=0,
-                sell_volume=tick.ltq
-            )
+            # Store the full tick separately for analysis
+            self._outlier_ticks.append(classified_tick)
+
+        # Use effective_ltq (not tick.ltq) for delta aggregation
+        classified_tick.buy_volume = effective_ltq if direction == "buy" else 0
+        classified_tick.sell_volume = effective_ltq if direction == "sell" else 0
+
+        return classified_tick
 
     def process_tick(self, tick: Tick) -> Optional[DeltaCandle]:
         """
@@ -100,6 +138,9 @@ class DeltaBuilder:
             self.cumulative_delta += tick_delta
             c.cumulative_delta = self.cumulative_delta
             
+            if tick.ltq > (classified.buy_volume + classified.sell_volume):
+                c.outlier_ticks_count += 1
+            
             if c.delta > c.high_delta:
                 c.high_delta = c.delta
             if c.delta < c.low_delta:
@@ -118,7 +159,8 @@ class DeltaBuilder:
             cumulative_delta=self.cumulative_delta, # Will be immediately updated
             high_delta=0.0,
             low_delta=0.0,
-            is_complete=False
+            is_complete=False,
+            outlier_ticks_count=0
         )
 
     def get_current_candle(self) -> Optional[DeltaCandle]:
@@ -146,33 +188,53 @@ class DeltaBuilder:
         
         Bearish divergence (distribution at highs):
           price makes higher high BUT delta does NOT -> return "bearish"
+          
+        Skip any candle in the lookback window that has has_feed_gap=True.
+        If more than 1 candle in the lookback window is gapped:
+            return None (cannot reliably detect divergence)
+        Log at WARNING when a gapped candle is skipped.
         """
-        if len(price_series) < lookback + 1 or len(delta_series) < lookback + 1:
+        with self._lock:
+            if len(price_series) < lookback + 1 or len(delta_series) < lookback + 1:
+                return None
+            
+            # Find the relevant completed candles
+            relevant_candles = self.completed_candles[-(lookback + 1):]
+                
+            gapped_count = sum(1 for c in relevant_candles if c.has_feed_gap)
+            if gapped_count > 1:
+                return None
+                
+            if relevant_candles and relevant_candles[-1].has_feed_gap:
+                logger.warning("Skipping divergence detection: current candle has feed gap")
+                return None
+                
+            if relevant_candles and len(relevant_candles) >= lookback + 1 and relevant_candles[0].has_feed_gap:
+                logger.warning("Skipping divergence detection: reference candle has feed gap")
+                return None
+                
+            current_price = price_series[-1]
+            current_delta = delta_series[-1]
+            
+            ref_price = price_series[-(lookback + 1)]
+            ref_delta = delta_series[-(lookback + 1)]
+            
+            if current_price <= ref_price and current_delta >= ref_delta:
+                return "bullish"
+                
+            if current_price >= ref_price and current_delta <= ref_delta:
+                return "bearish"
+                
             return None
-            
-        current_price = price_series[-1]
-        current_delta = delta_series[-1]
-        
-        # Compare with the candle `lookback` steps ago
-        # For a lookback of 3, we look at index -(lookback+1)
-        ref_price = price_series[-(lookback + 1)]
-        ref_delta = delta_series[-(lookback + 1)]
-        
-        # Bullish divergence: price makes lower low (current_price <= ref_price)
-        # BUT delta does NOT (current_delta >= ref_delta)
-        if current_price <= ref_price and current_delta >= ref_delta:
-            return "bullish"
-            
-        # Bearish divergence: price makes higher high (current_price >= ref_price)
-        # BUT delta does NOT (current_delta <= ref_delta)
-        if current_price >= ref_price and current_delta <= ref_delta:
-            return "bearish"
-            
-        return None
 
     def reset_session(self) -> None:
         """Call at start of each new trading session. Clears all state."""
         with self._lock:
+            if hasattr(self, 'zero_ltq_count') and self.zero_ltq_count > 0:
+                logger.info(f"Session ended. Total zero LTQ ticks skipped: {self.zero_ltq_count}")
             self.current_candle = None
             self.completed_candles.clear()
             self.cumulative_delta = 0.0
+            self.zero_ltq_count = 0
+            self._session_tick_volumes.clear()
+            self._outlier_ticks.clear()

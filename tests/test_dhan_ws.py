@@ -21,8 +21,8 @@ class TestDhanWebSocket(unittest.TestCase):
         # I: 13 (Security ID)
         # f: 22000.50 (LTP)
         # H: 50 (LTQ)
-        # I: 1715856000 (Epoch for 2024-05-16 10:40:00 UTC)
-        packet = struct.pack('<BHBIfHIfIIIffff', 4, 50, 1, 13, 22000.50, 50, 1715856000, 0, 0, 0, 0, 0, 0, 0, 0)
+        # I: 1715835600 (Epoch for 2024-05-16 10:40:00 UTC)
+        packet = struct.pack('<BHBIfHIfIIIffff', 4, 50, 1, 13, 22000.50, 50, 1715835600, 0, 0, 0, 0, 0, 0, 0, 0)
         
         self.client.register_tick_handler(self.tick_handler)
         self.client._handle_message(packet)
@@ -35,20 +35,20 @@ class TestDhanWebSocket(unittest.TestCase):
         self.assertEqual(tick.prev_ltp, 22000.50) # First tick, prev == current
         
         # Verify IST conversion
-        # 1715856000 UTC is 2024-05-16 16:10:00 IST
+        # 1715835600 UTC is 2024-05-16 16:10:00 IST
         ist_tz = pytz.timezone("Asia/Kolkata")
-        expected_ts = pd.Timestamp(1715856000, unit='s', tz='UTC').tz_convert(ist_tz)
+        expected_ts = pd.Timestamp(1715835600, unit='s', tz='UTC').tz_convert(ist_tz)
         self.assertEqual(tick.timestamp, expected_ts)
 
     def test_prev_ltp_state(self):
         self.client.register_tick_handler(self.tick_handler)
         
         # First tick
-        p1 = struct.pack('<BHBIfHIfIIIffff', 4, 50, 1, 13, 22000.50, 50, 1715856000, 0, 0, 0, 0, 0, 0, 0, 0)
+        p1 = struct.pack('<BHBIfHIfIIIffff', 4, 50, 1, 13, 22000.50, 50, 1715835600, 0, 0, 0, 0, 0, 0, 0, 0)
         self.client._handle_message(p1)
         
         # Second tick with different LTP
-        p2 = struct.pack('<BHBIfHIfIIIffff', 4, 50, 1, 13, 22005.75, 25, 1715856001, 0, 0, 0, 0, 0, 0, 0, 0)
+        p2 = struct.pack('<BHBIfHIfIIIffff', 4, 50, 1, 13, 22005.75, 25, 1715835601, 0, 0, 0, 0, 0, 0, 0, 0)
         self.client._handle_message(p2)
         
         self.assertEqual(len(self.received_ticks), 2)
@@ -60,7 +60,7 @@ class TestDhanWebSocket(unittest.TestCase):
         
         # Ticker packet (Response Code 2)
         # <BHBIfI (16 bytes)
-        p_ticker = struct.pack('<BHBIfI', 2, 16, 1, 13, 22000.50, 1715856000)
+        p_ticker = struct.pack('<BHBIfI', 2, 16, 1, 13, 22000.50, 1715835600)
         self.client._handle_message(p_ticker)
         
         self.assertEqual(len(self.received_ticks), 0)
