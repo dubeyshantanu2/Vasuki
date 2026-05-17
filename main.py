@@ -7,6 +7,7 @@ from typing import Optional
 import pandas as pd
 import pytz
 from loguru import logger
+from aiohttp import web
 
 from config.settings import CONFIG
 from config.expiry_config import ExpiryManager
@@ -110,6 +111,19 @@ class OrderFlowSystem:
         self._api_waiting_calls: int = 0
         
         self._bg_tasks = []
+
+    async def _health_check_server(self) -> None:
+        """Simple health check server for Fly.io."""
+        async def handle(request):
+            return web.Response(text="OK")
+        
+        app = web.Application()
+        app.add_routes([web.get('/', handle)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+        logger.info("Health check server started on port 8080")
 
     async def _wait_for_api_slot(self) -> None:
         self._api_waiting_calls += 1
@@ -638,6 +652,7 @@ class OrderFlowSystem:
         await self.discord.send_system_status("started", "OrderFlowSystem is now live.")
         
         # Background tasks
+        self._bg_tasks.append(asyncio.create_task(self._health_check_server()))
         self._bg_tasks.append(asyncio.create_task(self._heartbeat()))
         self._bg_tasks.append(asyncio.create_task(self._monitor_data_health()))
         self._bg_tasks.append(asyncio.create_task(self._schedule_vp_refresh()))

@@ -6,6 +6,9 @@
 app = 'vasuki'
 primary_region = 'iad'
 
+[processes]
+  app = 'python main.py'
+
 [build]
   builder = 'paketobuildpacks/builder:base'
 
