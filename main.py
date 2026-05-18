@@ -610,9 +610,6 @@ class OrderFlowSystem:
         """
         logger.info("Starting OrderFlowSystem...")
         
-        # Start health check server immediately so Fly.io proxy is satisfied
-        self._bg_tasks.append(asyncio.create_task(self._health_check_server()))
-        
         if not self._check_trading_day():
             logger.info("Holiday detected. Sleeping to keep container alive for health checks...")
             while True:
@@ -669,18 +666,6 @@ class OrderFlowSystem:
             task.cancel()
             
         await self.dhan_ws.disconnect()
-        await self.discord.send_system_status("stopped", f"System stopped gracefully. Processed {self.tick_count} ticks.")
-        logger.info(f"Session summary: Processed {self.tick_count} total ticks.")
-
-if __name__ == "__main__":
-    system = OrderFlowSystem()
-    try:
-        asyncio.run(system.run())
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received.")
-        asyncio.run(system.shutdown())
-        sys.exit(0)
-wait self.dhan_ws.disconnect()
         await self.discord.send_system_status("stopped", f"System stopped gracefully. Processed {self.tick_count} ticks.")
         logger.info(f"Session summary: Processed {self.tick_count} total ticks.")
 
