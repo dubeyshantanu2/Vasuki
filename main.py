@@ -609,6 +609,7 @@ class OrderFlowSystem:
         15. On KeyboardInterrupt: graceful shutdown
         """
         logger.info("Starting OrderFlowSystem...")
+        await self.discord.send_system_status("started", "OrderFlowSystem container started and initializing.")
         
         if not self._check_trading_day():
             logger.info("Holiday detected. Sleeping to keep container alive for health checks...")
