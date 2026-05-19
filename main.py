@@ -690,18 +690,29 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Failed to start health check server: {e}")
 
+        system = None
         try:
             system = OrderFlowSystem()
             await system.run()
+        except asyncio.CancelledError:
+            logger.info("Main task cancelled (likely due to shutdown).")
+            if system:
+                await system.shutdown()
+            raise
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt received.")
-            if 'system' in locals():
+            if system:
                 await system.shutdown()
-            sys.exit(0)
         except Exception as e:
             logger.exception(f"System crashed: {e}")
             # Keep alive so we can see logs and pass health checks
             while True:
-                await asyncio.sleep(3600)
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    break
 
-    asyncio.run(main_entry())
+    try:
+        asyncio.run(main_entry())
+    except KeyboardInterrupt:
+        logger.info("Process stopped by KeyboardInterrupt.")
