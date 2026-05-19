@@ -63,17 +63,32 @@ Vasuki is built on a modular architecture processing market data through multipl
 
 ## Running the System
 
-Run the main orchestrator script:
+### Local Execution
+
+Run the main orchestrator script locally:
 
 ```bash
 python main.py
 ```
 
+### Docker & Cloud Deployment (Fly.io)
+
+Vasuki is containerized for easy deployment to cloud platforms like Fly.io. A `Dockerfile` and `fly.toml` are included. To deploy on Fly.io:
+
+1. Install the `flyctl` CLI.
+2. Run `fly deploy`. 
+
+**Recent system enhancements include:**
+* **Health Check Server:** A lightweight `aiohttp` web server runs alongside the main loop on port `8080` to satisfy Fly.io container health checks.
+* **Graceful Shutdown:** Correctly intercepts `SIGINT` (KeyboardInterrupt) and `asyncio.CancelledError` to cleanly disconnect from WebSocket feeds, flush any remaining logs, and emit a final shutdown message to Discord before exiting.
+* **Discord Lifecycle Alerts:** Sends a 🟢 **System Started** alert immediately when the container boots up, and a 🔴 **System Stopped** alert upon a graceful shutdown.
+
 The system will automatically:
-1. Wait for the Indian Stock Market to open (09:00 IST).
-2. Fetch historical data to build the initial Market Structure and Volume Profiles.
-3. Connect to the Dhan WebSocket and begin processing real-time ticks.
-4. Refresh configurations periodically and emit signals to Discord when all entry gates are cleared.
+1. Initialize the container and notify via Discord.
+2. Wait for the Indian Stock Market to open (09:00 IST).
+3. Fetch historical data to build the initial Market Structure and Volume Profiles.
+4. Connect to the Dhan WebSocket and begin processing real-time ticks.
+5. Refresh configurations periodically and emit signals to Discord when all entry gates are cleared.
 
 ## Testing
 
