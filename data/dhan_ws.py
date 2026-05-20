@@ -323,8 +323,8 @@ class DhanWebSocketClient:
             return Tick(
                 security_id=str(unpacked[3]),
                 timestamp=localized_dt,
-                ltp=float(unpacked[4]),
-                ltq=int(unpacked[5]),
+                ltp=round(float(unpacked[4]), 2),
+                ltq=int(unpacked[5]) // CONFIG.trading.lot_size,
                 prev_ltp=0.0 # populated in _handle_message
             )
         except Exception as e:
@@ -350,8 +350,8 @@ class DhanWebSocketClient:
             return Tick(
                 security_id=str(unpacked[3]),
                 timestamp=localized_dt,
-                ltp=float(unpacked[4]),
-                ltq=int(unpacked[5]),
+                ltp=round(float(unpacked[4]), 2),
+                ltq=int(unpacked[5]) // CONFIG.trading.lot_size,
                 prev_ltp=0.0 # populated in _handle_message
             )
         except Exception as e:

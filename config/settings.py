@@ -30,6 +30,7 @@ class TradingConfig:
     security_id: str = "66071"           # NIFTY MAY FUT
     exchange_segment: str = "NSE_FNO"
     instrument_type: str = "FUTIDX"
+    lot_size: int = 65
     
     # Timeframes
     htf_interval: str = "60"          # 1H in minutes — for market structure
