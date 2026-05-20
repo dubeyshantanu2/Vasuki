@@ -312,12 +312,20 @@ class OrderFlowSystem:
             elif len(dates) == 1:
                 today_df = mtf_df[mtf_df['date'] == dates[-1]]
             
-            if prior_df is not None and not prior_df.empty:
-                self.prior_day_profile = self.vp_engine.build(prior_df)
-                
-            if today_df is not None and not today_df.empty:
-                self.session_profile = self.vp_engine.build(today_df)
+            if prior_df is not None and len(prior_df) >= 10:
+                try:
+                    self.prior_day_profile = self.vp_engine.build(prior_df)
+                except Exception as e:
+                    logger.warning(f"Failed to build prior day profile: {e}")
+                    
+            if today_df is not None and len(today_df) >= 10:
+                try:
+                    self.session_profile = self.vp_engine.build(today_df)
+                except Exception as e:
+                    logger.warning(f"Failed to build session profile: {e}")
+                    self.session_profile = self.prior_day_profile
             else:
+                logger.info("Not enough data for today's session profile yet. Using prior day profile as fallback.")
                 self.session_profile = self.prior_day_profile # Fallback
                 
             # 3. Log and post structure state + VP levels to Discord
