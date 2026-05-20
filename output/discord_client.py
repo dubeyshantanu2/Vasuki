@@ -17,6 +17,77 @@ class DiscordClient:
         self.config = config
         self._timestamps = deque(maxlen=5)
         self._lock = asyncio.Lock()
+        self._dashboard_message_id = None
+
+    async def _patch(self, webhook_url: str, message_id: str, payload: dict) -> None:
+        """Internal. PATCH to webhook message with retry (3 attempts)."""
+        if not webhook_url or not message_id:
+            return
+
+        url = f"{webhook_url}/messages/{message_id}"
+        await self._wait_rate_limit()
+
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.patch(url, json=payload, timeout=10) as resp:
+                        if resp.status in (200, 204):
+                            return
+                        elif resp.status == 429:
+                            try:
+                                data = await resp.json()
+                                retry_after = data.get("retry_after", 1.0)
+                            except Exception:
+                                retry_after = 1.0
+                            await asyncio.sleep(retry_after)
+                            continue
+                        else:
+                            text = await resp.text()
+                            logger.error(f"Discord webhook PATCH error {resp.status}: {text}")
+            except Exception as e:
+                logger.error(f"Discord PATCH failed (attempt {attempt + 1}/3): {e}")
+
+            if attempt < 2:
+                await asyncio.sleep(1)
+
+    async def create_or_update_dashboard(self, embed: dict) -> None:
+        """Creates or updates the live dashboard message."""
+        if not self.config.dashboard_webhook_url:
+            return
+
+        if self._dashboard_message_id:
+            # We already have a message, update it
+            await self._patch(self.config.dashboard_webhook_url, self._dashboard_message_id, {"embeds": [embed]})
+        else:
+            # Create a new message and save its ID
+            url = f"{self.config.dashboard_webhook_url}?wait=true"
+            await self._wait_rate_limit()
+            
+            for attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json={"embeds": [embed]}, timeout=10) as resp:
+                            if resp.status in (200, 201):
+                                data = await resp.json()
+                                self._dashboard_message_id = data.get("id")
+                                logger.info(f"Created Discord Dashboard message: {self._dashboard_message_id}")
+                                return
+                            elif resp.status == 429:
+                                try:
+                                    data = await resp.json()
+                                    retry_after = data.get("retry_after", 1.0)
+                                except Exception:
+                                    retry_after = 1.0
+                                await asyncio.sleep(retry_after)
+                                continue
+                            else:
+                                text = await resp.text()
+                                logger.error(f"Discord webhook POST (wait=true) error {resp.status}: {text}")
+                except Exception as e:
+                    logger.error(f"Discord dashboard creation failed (attempt {attempt + 1}/3): {e}")
+
+                if attempt < 2:
+                    await asyncio.sleep(1)
 
     def _format_price(self, price: float) -> str:
         """Format price with Indian comma notation (e.g., 22,450.0 or 1,22,450.0)."""
