@@ -313,10 +313,10 @@ class OrderFlowSystem:
                 today_df = mtf_df[mtf_df['date'] == dates[-1]]
             
             if prior_df is not None and not prior_df.empty:
-                self.prior_day_profile = self.vp_engine.build_from_ohlcv(prior_df)
+                self.prior_day_profile = self.vp_engine.build(prior_df)
                 
             if today_df is not None and not today_df.empty:
-                self.session_profile = self.vp_engine.build_from_ohlcv(today_df)
+                self.session_profile = self.vp_engine.build(today_df)
             else:
                 self.session_profile = self.prior_day_profile # Fallback
                 
