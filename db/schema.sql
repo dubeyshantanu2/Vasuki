@@ -93,3 +93,7 @@ CREATE TABLE IF NOT EXISTS spike_events (
     created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_spike_events_symbol_time ON spike_events (symbol, detected_at);
+
+-- Migrations (Run these if updating an existing database)
+ALTER TABLE volume_profile_snapshots ADD COLUMN IF NOT EXISTS poc_concentration_pct float8;
+ALTER TABLE market_structure_snapshots ADD COLUMN IF NOT EXISTS adaptive_lookback_used int;
