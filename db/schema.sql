@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS market_structure_snapshots (
     is_clear boolean NOT NULL,
     last_swing_high float8,
     last_swing_low float8,
+    adaptive_lookback_used int,   -- NEW COLUMN
     created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_market_structure_symbol_time ON market_structure_snapshots (symbol, captured_at);
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS volume_profile_snapshots (
     vah float8 NOT NULL,
     val float8 NOT NULL,
     total_volume float8 NOT NULL,
+    poc_concentration_pct float8,  -- NEW COLUMN
     created_at timestamptz DEFAULT now()
 );
 

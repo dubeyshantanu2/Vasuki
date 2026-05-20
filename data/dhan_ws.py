@@ -72,6 +72,12 @@ class DhanWebSocketClient:
             if handler not in self.handlers:
                 self.handlers.append(handler)
 
+    def register_gap_handler(self, handler: Callable[[pd.Timestamp, pd.Timestamp], None]) -> None:
+        """Register a callback to be notified of feed gaps upon reconnection."""
+        with self.handlers_lock:
+            if handler not in self.gap_handlers:
+                self.gap_handlers.append(handler)
+
     def register_session_start_handler(self, handler: Callable[[], None]) -> None:
         """Register a callback to be called once when clock crosses 09:15."""
         with self.handlers_lock:
