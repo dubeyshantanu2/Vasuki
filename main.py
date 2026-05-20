@@ -240,7 +240,7 @@ class OrderFlowSystem:
                 daily_df = self.dhan_rest.get_candles(
                     security_id=self.active_config.security_id,
                     exchange_segment=self.active_config.exchange_segment,
-                    instrument_type="INDEX",
+                    instrument_type=self.active_config.instrument_type,
                     interval="D",
                     from_date=start_date_90d,
                     to_date=today_str
@@ -268,7 +268,7 @@ class OrderFlowSystem:
             htf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
-                instrument_type="INDEX",
+                instrument_type=self.active_config.instrument_type,
                 interval=self.active_config.htf_interval,
                 from_date=start_date_5d,
                 to_date=today_str
@@ -293,7 +293,7 @@ class OrderFlowSystem:
             mtf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
-                instrument_type="INDEX",
+                instrument_type=self.active_config.instrument_type,
                 interval=self.active_config.mtf_interval,
                 from_date=start_date_2d,
                 to_date=today_str
@@ -481,7 +481,7 @@ class OrderFlowSystem:
             htf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
-                instrument_type="INDEX",
+                instrument_type=self.active_config.instrument_type,
                 interval=self.active_config.htf_interval,
                 from_date=start_date_5d,
                 to_date=today_str
@@ -529,7 +529,7 @@ class OrderFlowSystem:
             mtf_df = self.dhan_rest.get_candles(
                 security_id=self.active_config.security_id,
                 exchange_segment=self.active_config.exchange_segment,
-                instrument_type="INDEX",
+                instrument_type=self.active_config.instrument_type,
                 interval=self.active_config.mtf_interval,
                 from_date=today_str,
                 to_date=today_str

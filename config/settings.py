@@ -26,9 +26,10 @@ class DiscordConfig:
 @dataclass
 class TradingConfig:
     # Instrument
-    symbol: str = "NIFTY"
-    security_id: str = "13"           # NIFTY index security ID on Dhan
-    exchange_segment: str = "IDX_I"
+    symbol: str = "NIFTY-FUT"
+    security_id: str = "66071"           # NIFTY MAY FUT
+    exchange_segment: str = "NSE_FNO"
+    instrument_type: str = "FUTIDX"
     
     # Timeframes
     htf_interval: str = "60"          # 1H in minutes — for market structure
