@@ -315,9 +315,14 @@ class DhanWebSocketClient:
         
         try:
             unpacked = struct.unpack('<BHBIfHIfIIIffff', data[:50])
+            # Dhan sends standard Unix epochs but they are shifted by +5:30 natively.
+            # We treat the raw epoch as an IST naive datetime, then localize it to IST.
+            naive_dt = pd.to_datetime(unpacked[6], unit='s')
+            localized_dt = naive_dt.tz_localize(self.ist_tz)
+            
             return Tick(
                 security_id=str(unpacked[3]),
-                timestamp=pd.Timestamp(unpacked[6], unit='s', tz='UTC').tz_convert(self.ist_tz),
+                timestamp=localized_dt,
                 ltp=float(unpacked[4]),
                 ltq=int(unpacked[5]),
                 prev_ltp=0.0 # populated in _handle_message
@@ -337,9 +342,14 @@ class DhanWebSocketClient:
         
         try:
             unpacked = struct.unpack('<BHBIfHIfIIIIIIffff100s', data[:162])
+            # Dhan sends standard Unix epochs but they are shifted by +5:30 natively.
+            # We treat the raw epoch as an IST naive datetime, then localize it to IST.
+            naive_dt = pd.to_datetime(unpacked[6], unit='s')
+            localized_dt = naive_dt.tz_localize(self.ist_tz)
+            
             return Tick(
                 security_id=str(unpacked[3]),
-                timestamp=pd.Timestamp(unpacked[6], unit='s', tz='UTC').tz_convert(self.ist_tz),
+                timestamp=localized_dt,
                 ltp=float(unpacked[4]),
                 ltq=int(unpacked[5]),
                 prev_ltp=0.0 # populated in _handle_message
