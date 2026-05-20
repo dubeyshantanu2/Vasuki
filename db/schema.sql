@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS volume_profile_snapshots (
     val float8 NOT NULL,
     total_volume float8 NOT NULL,
     poc_concentration_pct float8,  -- NEW COLUMN
+    volume_ratio float8,           -- NEW COLUMN
     created_at timestamptz DEFAULT now()
 );
 
@@ -96,4 +97,5 @@ CREATE INDEX IF NOT EXISTS idx_spike_events_symbol_time ON spike_events (symbol,
 
 -- Migrations (Run these if updating an existing database)
 ALTER TABLE volume_profile_snapshots ADD COLUMN IF NOT EXISTS poc_concentration_pct float8;
+ALTER TABLE volume_profile_snapshots ADD COLUMN IF NOT EXISTS volume_ratio float8;
 ALTER TABLE market_structure_snapshots ADD COLUMN IF NOT EXISTS adaptive_lookback_used int;
