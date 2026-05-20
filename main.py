@@ -360,25 +360,25 @@ class OrderFlowSystem:
     def on_tick(self, tick: Tick) -> None:
         """
         Called by WebSocket client for every incoming tick.
-
+        
         1. delta_builder.process_tick(tick) → check for completed DeltaCandle
         2. classified = delta_builder.classify_tick(tick)
         3. footprint_builder.process_tick(classified) → check for completed FootprintCandle
         4. big_trade = big_trade_filter.process_tick(classified)
            if big_trade and significance == "block": discord.send_big_trade_alert()
-
+        
         Every N ticks (N=10 — configurable):
           5. Run signal_engine.evaluate() with current state
           6. If signal: discord.send_signal() + supabase.save_signal()
           7. Log gate results
-
+        
         Every completed DeltaCandle:
           8. Re-run market structure (on 1H candle completion only)
           9. Save delta_candle to Supabase
         """
         self.tick_count += 1
         self.current_price = tick.ltp
-        self.current_ltq = getattr(tick, 'ltq', 0)        
+        
         # Data Health Monitoring
         self._last_tick_time = tick.timestamp
         self._tick_count_window += 1
@@ -556,52 +556,6 @@ class OrderFlowSystem:
         except Exception as e:
             logger.error(f"Failed to refresh Volume Profile: {e}")
 
-    async def _live_dashboard_loop(self) -> None:
-        """Periodically updates the live Discord dashboard."""
-        while True:
-            await asyncio.sleep(15)  # Update every 15 seconds
-            
-            # Don't update if we have no ticks yet or market is closed
-            if not self._last_tick_time:
-                continue
-
-            # Gather data
-            ltp = getattr(self, 'current_price', 0.0)
-            ltq = getattr(self, 'current_ltq', 0)
-            
-            # Market Structure
-            struct_trend = "Neutral"
-            if self.structure_state:
-                if self.current_price > self.structure_state.resistance:
-                    struct_trend = "Bullish"
-                elif self.current_price < self.structure_state.support:
-                    struct_trend = "Bearish"
-
-            # Profile
-            poc_str = "N/A"
-            if self.session_profile:
-                poc_str = self.discord._format_price(self.session_profile.poc)
-
-            # Health
-            status_str = "🟢 Data Healthy" if self._market_data_healthy else "🔴 No Data"
-            if self._signals_paused:
-                status_str = "⏸ Paused (Circuit Breaker)"
-
-            embed = {
-                "title": f"📊 VASUKI DASHBOARD — {self.active_config.symbol}",
-                "color": 0x3498db,
-                "fields": [
-                    {"name": "Status", "value": status_str, "inline": False},
-                    {"name": "LTP", "value": self.discord._format_price(ltp), "inline": True},
-                    {"name": "Latest LTQ", "value": f"{ltq} lots", "inline": True},
-                    {"name": "Volume POC", "value": poc_str, "inline": False},
-                    {"name": "Structure Trend", "value": struct_trend, "inline": False}
-                ],
-                "footer": {"text": f"Last Updated: {pd.Timestamp.now(tz='Asia/Kolkata').strftime('%H:%M:%S IST')} | Refreshes every 15s"}
-            }
-
-            await self.discord.create_or_update_dashboard(embed)
-
     async def _heartbeat(self) -> None:
         """Log a heartbeat every 5 minutes."""
         while True:
@@ -701,7 +655,6 @@ class OrderFlowSystem:
         self._bg_tasks.append(asyncio.create_task(self._monitor_data_health()))
         self._bg_tasks.append(asyncio.create_task(self._schedule_vp_refresh()))
         self._bg_tasks.append(asyncio.create_task(self._schedule_structure_refresh()))
-        self._bg_tasks.append(asyncio.create_task(self._live_dashboard_loop()))
         
         # 14. Connect (blocks)
         instruments = [{

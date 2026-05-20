@@ -22,7 +22,6 @@ class SupabaseConfig:
 class DiscordConfig:
     webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
     alert_webhook_url: str = os.getenv("DISCORD_ALERT_WEBHOOK_URL", "")
-    dashboard_webhook_url: str = os.getenv("DISCORD_DASHBOARD_WEBHOOK_URL", "")
 
 @dataclass
 class TradingConfig:
