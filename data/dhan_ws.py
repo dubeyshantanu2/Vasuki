@@ -62,7 +62,8 @@ class DhanWebSocketClient:
             "BSE_EQ": "BSE_EQ",
             "MCX_COMM": "MCX_COMM",
             "BSE_CURR": "BSE_CURRENCY",
-            "BSE_FNO": "BSE_FNO"
+            "BSE_FNO": "BSE_FNO",
+            "IDX_I": "IDX_I"
         }
 
     def register_tick_handler(self, handler: Callable[[Tick], None]) -> None:
@@ -131,7 +132,7 @@ class DhanWebSocketClient:
     async def connect(self, instruments: list[dict]) -> None:
         """
         Connect to Dhan WebSocket and start streaming.
-        instruments: [{"security_id": "13", "exchange_segment": "NSE_EQ"}]
+        instruments: [{"security_id": "13", "exchange_segment": "IDX_I"}]
         Runs indefinitely. Reconnects on disconnect with exponential backoff.
         Max reconnect wait: 30 seconds.
         """

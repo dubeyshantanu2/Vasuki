@@ -28,7 +28,7 @@ class TradingConfig:
     # Instrument
     symbol: str = "NIFTY"
     security_id: str = "13"           # NIFTY index security ID on Dhan
-    exchange_segment: str = "NSE_EQ"
+    exchange_segment: str = "IDX_I"
     
     # Timeframes
     htf_interval: str = "60"          # 1H in minutes — for market structure

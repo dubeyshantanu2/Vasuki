@@ -620,8 +620,8 @@ class OrderFlowSystem:
         # 10. Check market hours
         while True:
             now = datetime.now(self.ist_tz)
-            # Market hours 9:00 - 15:35 IST
-            start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            # Market hours 9:15 - 15:35 IST
+            start_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
             end_time = now.replace(hour=15, minute=35, second=0, microsecond=0)
             
             if start_time <= now <= end_time:
