@@ -91,7 +91,7 @@ class OrderFlowSystem:
         self.current_price = 0.0
         
         # Variables for volatility spike detection
-        self.recent_candle_ranges: list[float] = []
+        self.recent_candle_ranges: deque = deque(maxlen=20)
         self.current_high: float = 0.0
         self.current_low: float = float('inf')
         self.current_candle_start: Optional[pd.Timestamp] = None

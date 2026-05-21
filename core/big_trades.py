@@ -1,4 +1,5 @@
 import logging
+import collections
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Callable
 import pandas as pd
@@ -34,10 +35,10 @@ class BigTradeFilter:
         self.on_big_trade = on_big_trade
         
         self._rollover_multiplier = self.ROLLOVER_SIZE_MULTIPLIER
-        self._session_big_trade_sizes: List[int] = []
+        self._session_big_trade_sizes: collections.deque = collections.deque(maxlen=20)
         
         self._lock = Lock()
-        self.big_trades: List[BigTrade] = []
+        self.big_trades: collections.deque = collections.deque(maxlen=1000)
 
     def set_expiry_mode(self, is_expiry: bool) -> None:
         self._rollover_multiplier = 3.0 if is_expiry else self.ROLLOVER_SIZE_MULTIPLIER
@@ -50,8 +51,6 @@ class BigTradeFilter:
         """
         with self._lock:
             self._session_big_trade_sizes.append(trade.quantity)
-            if len(self._session_big_trade_sizes) > 20:
-                self._session_big_trade_sizes.pop(0)
             
             # If fewer than 5 big trades seen: no rollover classification (not enough baseline)
             if len(self._session_big_trade_sizes) < 5:

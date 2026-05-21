@@ -1,4 +1,5 @@
 import logging
+import collections
 from dataclasses import dataclass
 from typing import Optional, List
 import pandas as pd
@@ -45,9 +46,9 @@ class DeltaBuilder:
         self.completed_candles: List[DeltaCandle] = []
         self.cumulative_delta: float = 0.0
 
-        self._session_tick_volumes: list[int] = []
+        self._session_tick_volumes: collections.deque = collections.deque(maxlen=50)
         self._outlier_cap_multiplier: float = outlier_cap_multiplier
-        self._outlier_ticks: list[ClassifiedTick] = []
+        self._outlier_ticks: collections.deque = collections.deque(maxlen=100)
 
     def _get_volume_cap(self) -> Optional[int]:
         """
@@ -57,8 +58,7 @@ class DeltaBuilder:
         """
         if len(self._session_tick_volumes) < 20:
             return None
-        recent = self._session_tick_volumes[-50:]
-        avg_ltq = sum(recent) / len(recent)
+        avg_ltq = sum(self._session_tick_volumes) / len(self._session_tick_volumes)
         return max(100, int(avg_ltq * self._outlier_cap_multiplier))
 
     def classify_tick(self, tick: Tick) -> ClassifiedTick:

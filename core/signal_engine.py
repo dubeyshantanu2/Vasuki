@@ -196,7 +196,7 @@ class SignalEngine:
 
     def _detect_volatility_spike(
         self,
-        recent_candles_range: list[float],   # list of (high-low) for last 10 candles
+        recent_candles_range,
         current_candle_range: float,
     ) -> tuple[bool, float]:
         """
@@ -206,7 +206,9 @@ class SignalEngine:
         """
         if len(recent_candles_range) < 5:
             return False, 0.0
-        avg_range = sum(recent_candles_range[-10:]) / min(len(recent_candles_range), 10)
+        
+        recent_list = list(recent_candles_range)[-10:]
+        avg_range = sum(recent_list) / min(len(recent_list), 10)
         return current_candle_range > (avg_range * self.spike_threshold_multiplier), avg_range
 
     def _purge_expired_cooldowns(self, timestamp: pd.Timestamp) -> None:
