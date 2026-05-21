@@ -157,7 +157,7 @@ class OrderFlowSystem:
         logger.warning(msg)
         asyncio.create_task(self.discord.send_system_status("warning", msg))
         if self.session_profile:
-            logger.info(f"Circuit Breaker paused at Session POC: {self.session_profile.poc}, Total Volume: {self.session_profile.total_volume}")
+            logger.info(f"Circuit Breaker paused at Session POC: {self.session_profile.poc}, Total Volume: {self.session_profile.total_volume:.2f}")
 
     def _on_circuit_breaker_resume(self) -> None:
         """

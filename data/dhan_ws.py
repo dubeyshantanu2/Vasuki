@@ -121,6 +121,16 @@ class DhanWebSocketClient:
                             handler()
                         except Exception as e:
                             logger.error(f"Error in circuit breaker handler: {e}")
+                
+                if silence > 180:
+                    if not getattr(self, '_last_forced_reconnect', None) or (now - self._last_forced_reconnect).total_seconds() > 60:
+                        logger.warning(f"Silence exceeded 3 minutes ({silence:.0f}s). Forcing WebSocket reconnect.")
+                        self._last_forced_reconnect = now
+                        if getattr(self, 'websocket', None):
+                            try:
+                                await self.websocket.close()
+                            except Exception as e:
+                                logger.error(f"Error closing zombie websocket: {e}")
             else:
                 if self._circuit_breaker_suspected:
                     self._circuit_breaker_suspected = False

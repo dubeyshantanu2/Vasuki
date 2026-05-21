@@ -46,7 +46,7 @@ class TradingConfig:
 
     # Market Structure
     swing_lookback: int = 3           # candles each side for swing detection
-    gap_threshold_pct: float = 0.005  # 0.5% threshold for gap detection
+    gap_threshold_pct: float = 0.010  # 1.0% threshold for gap detection
     expiry_gap_tier2_pct: float = 0.010 # 1.0%
     expiry_gap_tier3_pct: float = 0.015 # 1.5%
     atr_multiplier_medium: float = 1.5   # lookback → 5
